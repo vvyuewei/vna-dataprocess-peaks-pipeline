@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.csv
+outputs/
+*.ds
+*.snp
+.DS_Store
+node_modules/
+
