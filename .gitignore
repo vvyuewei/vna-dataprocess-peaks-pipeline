@@ -6,4 +6,5 @@ outputs/
 *.snp
 .DS_Store
 node_modules/
+.result_processing_settings.json
 
