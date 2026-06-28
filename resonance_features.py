@@ -16,6 +16,8 @@ LOCAL_VALLEY_COLUMN = "局部谷值"
 SYMMETRIC_FREQ_DIFF_COLUMN = "双峰频率差"
 SYMMETRIC_MIDDLE_PEAK_FREQ_COLUMN = "凸起频率"
 SYMMETRIC_MIDDLE_PEAK_DELTA_COLUMN = "凸起幅值差"
+MIN_DOUBLE_PEAK_SAMPLE_GAP = 2
+MIN_DOUBLE_PEAK_LOCAL_VALLEY_PROMINENCE = 0.05
 LOGGER = logging.getLogger(__name__)
 
 
@@ -86,34 +88,78 @@ def _extract_curve_two_minima(frequency: pd.Series, values: pd.Series) -> tuple[
 
     valid_frequency = frequency.loc[valid].to_numpy(dtype=float)
     valid_values = values.loc[valid].to_numpy(dtype=float)
-    local_indices = _find_local_minima_indices(valid_values)
+    global_min_index = int(np.argmin(valid_values))
 
-    if len(local_indices) >= 2:
-        candidate_indices = local_indices
-    else:
-        candidate_indices = np.arange(len(valid_values))
+    selected_pair = _select_main_and_local_valley_pair(valid_values, global_min_index)
+    if selected_pair is None:
+        return (
+            float(valid_frequency[global_min_index]),
+            float(valid_values[global_min_index]),
+            np.nan,
+            np.nan,
+        )
 
-    ranked_indices = candidate_indices[np.argsort(valid_values[candidate_indices])]
-    selected_indices = list(ranked_indices[:2])
-
-    if len(selected_indices) < 2:
-        selected_indices.extend([-1] * (2 - len(selected_indices)))
-
-    selected_indices = sorted(selected_indices, key=lambda index: valid_frequency[index] if index >= 0 else np.inf)
+    selected_indices = sorted(selected_pair, key=lambda index: valid_frequency[index])
     first_index, second_index = selected_indices
 
-    first = (
-        (float(valid_frequency[first_index]), float(valid_values[first_index]))
-        if first_index >= 0
-        else (np.nan, np.nan)
-    )
-    second = (
-        (float(valid_frequency[second_index]), float(valid_values[second_index]))
-        if second_index >= 0
-        else (np.nan, np.nan)
-    )
+    first = (float(valid_frequency[first_index]), float(valid_values[first_index]))
+    second = (float(valid_frequency[second_index]), float(valid_values[second_index]))
 
     return first[0], first[1], second[0], second[1]
+
+
+def _select_main_and_local_valley_pair(values: np.ndarray, main_index: int) -> tuple[int, int] | None:
+    local_indices = [int(index) for index in _find_local_minima_indices(values) if int(index) != main_index]
+    candidates: list[dict[str, float | int]] = []
+    for valley_index in local_indices:
+        if abs(valley_index - main_index) < MIN_DOUBLE_PEAK_SAMPLE_GAP:
+            continue
+        candidate = _measure_local_valley_by_shape(values, valley_index, main_index)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    if not candidates:
+        return None
+
+    best_candidate = max(candidates, key=lambda candidate: float(candidate["local_valley_s11"]))
+    return int(best_candidate["valley_index"]), int(main_index)
+
+
+def _measure_local_valley_by_shape(values: np.ndarray, valley_index: int, main_index: int) -> dict[str, float | int] | None:
+    if valley_index < main_index:
+        peak_candidates = np.flatnonzero((np.arange(len(values)) > valley_index) & (np.arange(len(values)) < main_index))
+        peak_index = _highest_local_peak_index(values, peak_candidates)
+    else:
+        peak_candidates = np.flatnonzero((np.arange(len(values)) > main_index) & (np.arange(len(values)) < valley_index))
+        peak_index = _highest_local_peak_index(values, peak_candidates)
+
+    if peak_index is None:
+        return None
+
+    prominence = float(values[peak_index]) - float(values[valley_index])
+    if prominence < MIN_DOUBLE_PEAK_LOCAL_VALLEY_PROMINENCE:
+        return None
+
+    return {
+        "valley_index": int(valley_index),
+        "peak_index": int(peak_index),
+        "local_valley_s11": prominence,
+    }
+
+
+def _highest_local_peak_index(values: np.ndarray, candidates: np.ndarray) -> int | None:
+    local_peaks: list[int] = []
+    for index in candidates:
+        index = int(index)
+        left_ok = index == 0 or values[index] >= values[index - 1]
+        right_ok = index + 1 == len(values) or values[index] >= values[index + 1]
+        if left_ok and right_ok:
+            local_peaks.append(index)
+
+    if not local_peaks:
+        return None
+
+    return max(local_peaks, key=lambda index: float(values[index]))
 
 
 def extract_local_valley(
@@ -141,6 +187,14 @@ def extract_local_valley(
     order = np.argsort(frequency.loc[valid].to_numpy(dtype=float))
     valid_frequency = frequency.loc[valid].to_numpy(dtype=float)[order]
     valid_values = values.loc[valid].to_numpy(dtype=float)[order]
+
+    if f_res_2 is None or pd.isna(f_res_2):
+        return {
+            "local_valley_freq": np.nan,
+            "local_valley_s11": np.nan,
+            "success": False,
+            "message": "Only one resonance peak detected.",
+        }
 
     reference_frequencies = [
         value
@@ -196,34 +250,20 @@ def _measure_local_valley_depth(
     valley_index = int(np.argmin(np.abs(frequency - valley_frequency)))
     if valley_index == 0 or valley_index == len(values) - 1:
         return None
-
-    step = float(np.nanmedian(np.diff(frequency))) if len(frequency) > 1 else np.nan
-    min_half_width = abs(step) * 3 if not pd.isna(step) and step != 0 else 0.0
-    sweep_span = float(np.nanmax(frequency) - np.nanmin(frequency))
-    half_width = max(min_half_width, min(2.0, sweep_span * 0.08))
-
-    nearest_other_distance = min(
-        (abs(valley_frequency - other) for other in other_valley_frequencies),
-        default=np.inf,
-    )
-    if np.isfinite(nearest_other_distance):
-        half_width = min(half_width, max(min_half_width, nearest_other_distance * 0.45))
-
-    left_bound = valley_frequency - half_width if search_start is None else max(search_start, valley_frequency - half_width)
-    right_bound = valley_frequency + half_width if search_stop is None else min(search_stop, valley_frequency + half_width)
-
-    left_candidates = np.flatnonzero((frequency >= left_bound) & (frequency < frequency[valley_index]))
-    right_candidates = np.flatnonzero((frequency > frequency[valley_index]) & (frequency <= right_bound))
-    if len(left_candidates) == 0 or len(right_candidates) == 0:
+    other_valley_indices = [
+        int(np.argmin(np.abs(frequency - other_frequency)))
+        for other_frequency in other_valley_frequencies
+        if not pd.isna(other_frequency)
+    ]
+    if not other_valley_indices:
         return None
 
-    left_index = _nearest_left_shoulder(values, valley_index, left_candidates)
-    right_index = _nearest_right_shoulder(values, valley_index, right_candidates)
-    if left_index == right_index:
+    main_index = min(other_valley_indices, key=lambda index: float(values[index]))
+    shape_candidate = _measure_local_valley_by_shape(values, valley_index, main_index)
+    if shape_candidate is None:
         return None
 
-    baseline = float((values[left_index] + values[right_index]) / 2.0)
-    depth = baseline - float(values[valley_index])
+    depth = float(shape_candidate["local_valley_s11"])
     if depth <= 0:
         return None
 
@@ -233,11 +273,23 @@ def _measure_local_valley_depth(
     }
 
 
-def _nearest_left_shoulder(values: np.ndarray, valley_index: int, candidates: np.ndarray) -> int:
+def _nearest_left_peak_top(values: np.ndarray, valley_index: int, candidates: np.ndarray) -> int:
+    """Return the nearest local maximum immediately left of a valley."""
     candidate_set = set(int(index) for index in candidates)
+    local_maxima: list[int] = []
+
+    for index in candidates:
+        index = int(index)
+        left_ok = index == 0 or values[index] >= values[index - 1]
+        right_ok = index + 1 == len(values) or values[index] >= values[index + 1]
+        if left_ok and right_ok:
+            local_maxima.append(index)
+
+    if local_maxima:
+        return max(local_maxima)
+
     previous_value = values[valley_index]
     best_index = int(candidates[-1])
-
     for index in range(valley_index - 1, int(candidates[0]) - 1, -1):
         if index not in candidate_set:
             continue
@@ -245,21 +297,7 @@ def _nearest_left_shoulder(values: np.ndarray, valley_index: int, candidates: np
             break
         best_index = index
         previous_value = values[index]
-    return best_index
 
-
-def _nearest_right_shoulder(values: np.ndarray, valley_index: int, candidates: np.ndarray) -> int:
-    candidate_set = set(int(index) for index in candidates)
-    previous_value = values[valley_index]
-    best_index = int(candidates[0])
-
-    for index in range(valley_index + 1, int(candidates[-1]) + 1):
-        if index not in candidate_set:
-            continue
-        if values[index] < previous_value:
-            break
-        best_index = index
-        previous_value = values[index]
     return best_index
 
 

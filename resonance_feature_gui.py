@@ -39,7 +39,6 @@ class ResultProcessingDialog(tk.Toplevel):
         self.formula_results: dict[str, pd.DataFrame] = {}
         self.aliases = self._build_aliases(list(self.source.columns))
         self.formula_tables = self._load_formula_tables()
-        self.table_axis_labels = self._load_table_axis_labels()
         self.table_panels: dict[str, dict[str, object]] = {}
         self.active_formula_table = tk.StringVar(value=self._initial_active_formula_table())
 
@@ -48,6 +47,7 @@ class ResultProcessingDialog(tk.Toplevel):
         self.operator = tk.StringVar(value=self.saved_settings.get("operator", ">"))
         self.threshold = tk.StringVar(value=self.saved_settings.get("threshold", "0.15"))
         self.pick_mode = tk.StringVar(value=self.saved_settings.get("pick_mode", "minimum"))
+        self.export_prefix = tk.StringVar(value=self.saved_settings.get("export_prefix", ""))
         if self.target_column.get() not in self.source.columns:
             self.target_column.set(self._default_target_column())
         self.status_text = tk.StringVar(value=f"Loaded {len(self.source)} extracted rows.")
@@ -104,8 +104,13 @@ class ResultProcessingDialog(tk.Toplevel):
             state="readonly",
         ).grid(row=1, column=3, sticky="ew", padx=(6, 0), pady=(8, 0))
 
+        ttk.Label(filter_frame, text="Export prefix").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(filter_frame, textvariable=self.export_prefix).grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0)
+        )
+
         filter_actions = ttk.Frame(filter_frame)
-        filter_actions.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        filter_actions.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         ttk.Button(filter_actions, text="Preview Filter / 预览筛选", command=self._preview_filter).grid(
             row=0, column=0, sticky="w", padx=(0, 6)
         )
@@ -207,21 +212,6 @@ class ResultProcessingDialog(tk.Toplevel):
             tables.setdefault(table_name, self._default_formula_rows())
         return tables
 
-    def _load_table_axis_labels(self) -> dict[str, dict[str, str]]:
-        raw_labels = self.saved_settings.get("table_axis_labels", {})
-        labels: dict[str, dict[str, str]] = {}
-        if isinstance(raw_labels, dict):
-            for table_name, values in raw_labels.items():
-                if isinstance(table_name, str) and isinstance(values, dict):
-                    labels[table_name] = {
-                        "x": str(values.get("x", "")),
-                        "y": str(values.get("y", "")),
-                        "z": str(values.get("z", "")),
-                    }
-        for table_name in self.formula_tables:
-            labels.setdefault(table_name, {"x": "", "y": "", "z": ""})
-        return labels
-
     def _save_settings(self) -> None:
         self._save_all_formula_rows()
         data = {
@@ -230,6 +220,7 @@ class ResultProcessingDialog(tk.Toplevel):
             "operator": self.operator.get(),
             "threshold": self.threshold.get(),
             "pick_mode": self.pick_mode.get(),
+            "export_prefix": self.export_prefix.get(),
             "active_formula_table": self.active_formula_table.get(),
             "formula_tables": {
                 table_name: [
@@ -239,7 +230,6 @@ class ResultProcessingDialog(tk.Toplevel):
                 ]
                 for table_name, rows in self.formula_tables.items()
             },
-            "table_axis_labels": self.table_axis_labels,
         }
         try:
             with self.config_path.open("w", encoding="utf-8") as handle:
@@ -276,17 +266,17 @@ class ResultProcessingDialog(tk.Toplevel):
             messagebox.showerror("Filter failed", str(exc))
             return
 
-        self.formula_results.clear()
         self._refresh_input_preview()
-        self._clear_all_formula_previews()
-        self.status_text.set(f"Filtered to {len(self.current)} rows.")
+        self.status_text.set(
+            f"Filtered to {len(self.current)} rows. Built tables are unchanged until you rebuild them."
+        )
 
     def _reset_filter(self) -> None:
         self.current = self.source.copy()
-        self.formula_results.clear()
         self._refresh_input_preview()
-        self._clear_all_formula_previews()
-        self.status_text.set(f"Reset to {len(self.current)} rows.")
+        self.status_text.set(
+            f"Reset to {len(self.current)} rows. Built tables are unchanged until you rebuild them."
+        )
 
     def _filter_rows(self, data: pd.DataFrame, target: str) -> pd.DataFrame:
         threshold_text = self.threshold.get().strip()
@@ -435,62 +425,46 @@ class ResultProcessingDialog(tk.Toplevel):
     def _create_formula_table_panel(self, table_name: str) -> None:
         panel = ttk.LabelFrame(self.tables_paned, text=table_name, padding=8)
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(4, weight=1)
+        panel.rowconfigure(3, weight=1)
 
         grid = ttk.Frame(panel)
         grid.grid(row=0, column=0, sticky="ew")
         grid.columnconfigure(1, weight=1)
         grid.columnconfigure(2, weight=2)
         ttk.Label(grid, text="#").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        ttk.Label(grid, text="Title / 标题").grid(row=0, column=1, sticky="ew", padx=(0, 6))
-        ttk.Label(grid, text="Formula / 公式").grid(row=0, column=2, sticky="ew")
-
-        axis_frame = ttk.Frame(panel)
-        axis_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        axis_frame.columnconfigure(1, weight=1)
-        axis_frame.columnconfigure(3, weight=1)
-        axis_frame.columnconfigure(5, weight=1)
-        axis_labels = self.table_axis_labels.setdefault(table_name, {"x": "", "y": "", "z": ""})
-        x_label = tk.StringVar(value=axis_labels.get("x", ""))
-        y_label = tk.StringVar(value=axis_labels.get("y", ""))
-        z_label = tk.StringVar(value=axis_labels.get("z", ""))
-        ttk.Label(axis_frame, text="X").grid(row=0, column=0, sticky="w")
-        ttk.Entry(axis_frame, textvariable=x_label, width=12).grid(row=0, column=1, sticky="ew", padx=(4, 8))
-        ttk.Label(axis_frame, text="Y").grid(row=0, column=2, sticky="w")
-        ttk.Entry(axis_frame, textvariable=y_label, width=12).grid(row=0, column=3, sticky="ew", padx=(4, 8))
-        ttk.Label(axis_frame, text="Z").grid(row=0, column=4, sticky="w")
-        ttk.Entry(axis_frame, textvariable=z_label, width=12).grid(row=0, column=5, sticky="ew", padx=(4, 0))
+        ttk.Label(grid, text="Title").grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        ttk.Label(grid, text="Formula").grid(row=0, column=2, sticky="ew")
 
         actions = ttk.Frame(panel)
-        actions.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(actions, text="Add Row / 加一行", command=lambda name=table_name: self._add_formula_row(name)).grid(
+        actions.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(actions, text="Add Row", command=lambda name=table_name: self._add_formula_row(name)).grid(
             row=0, column=0, sticky="w"
         )
         ttk.Button(
             actions,
-            text="Remove Row / 删一行",
+            text="Remove Row",
             command=lambda name=table_name: self._remove_formula_row(name),
         ).grid(row=0, column=1, sticky="w", padx=(6, 0))
         ttk.Button(
             actions,
-            text="Apply to Preview / 追加到预览",
+            text="Apply to Preview",
             command=lambda name=table_name: self._apply_formula_table_to_preview(name),
         ).grid(row=0, column=2, sticky="w", padx=(6, 0))
-        ttk.Label(panel, text="Preview / 预览").grid(row=3, column=0, sticky="w", pady=(8, 2))
+
+        ttk.Label(panel, text="Preview").grid(row=2, column=0, sticky="w", pady=(8, 2))
         preview = ttk.Treeview(panel, show="headings", height=8)
         y_scroll = ttk.Scrollbar(panel, orient="vertical", command=preview.yview)
         x_scroll = ttk.Scrollbar(panel, orient="horizontal", command=preview.xview)
         preview.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-        preview.grid(row=4, column=0, sticky="nsew")
-        y_scroll.grid(row=4, column=1, sticky="ns")
-        x_scroll.grid(row=5, column=0, sticky="ew")
+        preview.grid(row=3, column=0, sticky="nsew")
+        y_scroll.grid(row=3, column=1, sticky="ns")
+        x_scroll.grid(row=4, column=0, sticky="ew")
 
         self.table_panels[table_name] = {
             "frame": panel,
             "grid": grid,
             "rows": [],
             "preview": preview,
-            "axis_vars": {"x": x_label, "y": y_label, "z": z_label},
         }
         self.tables_paned.add(panel, weight=1)
         for title, formula in self.formula_tables.get(table_name, self._default_formula_rows()):
@@ -507,7 +481,6 @@ class ResultProcessingDialog(tk.Toplevel):
         next_number = max(existing_numbers, default=0) + 1
         table_name = f"Table {next_number}"
         self.formula_tables[table_name] = self._default_formula_rows()
-        self.table_axis_labels[table_name] = {"x": "", "y": "", "z": ""}
         self._create_formula_table_panel(table_name)
         self._refresh_active_table_choices()
         self.active_formula_table.set(table_name)
@@ -529,7 +502,6 @@ class ResultProcessingDialog(tk.Toplevel):
         self.tables_paned.forget(panel["frame"])
         panel["frame"].destroy()
         self.formula_tables.pop(table_name, None)
-        self.table_axis_labels.pop(table_name, None)
         self.formula_results.pop(table_name, None)
 
         next_table = next(iter(self.table_panels))
@@ -539,10 +511,14 @@ class ResultProcessingDialog(tk.Toplevel):
         self.status_text.set(f"Deleted {table_name}.")
 
     def _save_preset(self) -> None:
-        self._save_all_formula_rows()
+        table_name = self.active_formula_table.get()
+        if table_name not in self.table_panels:
+            messagebox.showwarning("Missing table", "Please select a valid active table.")
+            return
+        self._save_formula_rows(table_name)
         filename = filedialog.asksaveasfilename(
             title="Save table preset",
-            initialfile="formula_table_preset.json",
+            initialfile=f"{self._safe_filename_part(table_name)}_preset.json",
             defaultextension=".json",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
@@ -550,15 +526,14 @@ class ResultProcessingDialog(tk.Toplevel):
             return
 
         preset = {
-            "formula_tables": {
-                table_name: [
+            "formula_table": {
+                "name": table_name,
+                "rows": [
                     {"title": title, "formula": formula}
-                    for title, formula in rows
+                    for title, formula in self.formula_tables.get(table_name, [])
                     if title or formula
-                ]
-                for table_name, rows in self.formula_tables.items()
-            },
-            "table_axis_labels": self.table_axis_labels,
+                ],
+            }
         }
         try:
             with Path(filename).open("w", encoding="utf-8") as handle:
@@ -567,7 +542,7 @@ class ResultProcessingDialog(tk.Toplevel):
             messagebox.showerror("Preset save failed", str(exc))
             return
 
-        self.status_text.set(f"Saved preset: {filename}")
+        self.status_text.set(f"Saved preset for {table_name}: {filename}")
 
     def _load_preset(self) -> None:
         filename = filedialog.askopenfilename(
@@ -580,53 +555,52 @@ class ResultProcessingDialog(tk.Toplevel):
         try:
             with Path(filename).open("r", encoding="utf-8") as handle:
                 preset = json.load(handle)
-            formula_tables, axis_labels = self._parse_table_preset(preset)
+            formula_rows = self._parse_table_preset(preset)
         except Exception as exc:
             messagebox.showerror("Preset load failed", str(exc))
             return
 
-        self._apply_table_configuration(formula_tables, axis_labels)
-        self._save_settings()
-        self.status_text.set(f"Loaded preset: {filename}")
+        table_name = self.active_formula_table.get()
+        if table_name not in self.table_panels:
+            messagebox.showwarning("Missing table", "Please select a valid active table.")
+            return
 
-    def _parse_table_preset(self, preset: object) -> tuple[dict[str, list[tuple[str, str]]], dict[str, dict[str, str]]]:
+        self._replace_formula_rows(table_name, formula_rows)
+        self._save_settings()
+        self.status_text.set(f"Loaded preset into {table_name}: {filename}")
+
+    def _parse_table_preset(self, preset: object) -> list[tuple[str, str]]:
         if not isinstance(preset, dict):
             raise ValueError("Preset must be a JSON object.")
 
+        single_table = preset.get("formula_table")
+        if isinstance(single_table, dict):
+            rows = single_table.get("rows", [])
+            parsed_rows = self._parse_formula_rows(rows)
+            if parsed_rows:
+                return parsed_rows
+
         raw_tables = preset.get("formula_tables", {})
         if not isinstance(raw_tables, dict):
-            raise ValueError("Preset is missing formula_tables.")
+            raise ValueError("Preset is missing formula table rows.")
 
-        formula_tables: dict[str, list[tuple[str, str]]] = {}
-        for table_name, rows in raw_tables.items():
-            if not isinstance(table_name, str) or not isinstance(rows, list):
+        active_table = self.active_formula_table.get()
+        table_items = list(raw_tables.items())
+        if active_table in raw_tables:
+            table_items = [(active_table, raw_tables[active_table])]
+
+        for _, rows in table_items:
+            if not isinstance(rows, list):
                 continue
-            parsed_rows: list[tuple[str, str]] = []
-            for row in rows:
-                if isinstance(row, dict):
-                    parsed_rows.append((str(row.get("title", "")), str(row.get("formula", ""))))
+            parsed_rows = self._parse_formula_rows(rows)
             if parsed_rows:
-                formula_tables[table_name] = parsed_rows
+                return parsed_rows
 
-        if not formula_tables:
-            raise ValueError("Preset has no formula rows.")
-
-        raw_labels = preset.get("table_axis_labels", {})
-        axis_labels: dict[str, dict[str, str]] = {}
-        if isinstance(raw_labels, dict):
-            for table_name, labels in raw_labels.items():
-                if isinstance(table_name, str) and isinstance(labels, dict):
-                    axis_labels[table_name] = {
-                        "x": str(labels.get("x", "")),
-                        "y": str(labels.get("y", "")),
-                        "z": str(labels.get("z", "")),
-                    }
-        return formula_tables, axis_labels
+        raise ValueError("Preset has no formula rows.")
 
     def _apply_table_configuration(
         self,
         formula_tables: dict[str, list[tuple[str, str]]],
-        axis_labels: dict[str, dict[str, str]],
     ) -> None:
         for panel in list(self.table_panels.values()):
             self.tables_paned.forget(panel["frame"])
@@ -635,16 +609,36 @@ class ResultProcessingDialog(tk.Toplevel):
         self.table_panels.clear()
         self.formula_results.clear()
         self.formula_tables = formula_tables
-        self.table_axis_labels = {
-            table_name: axis_labels.get(table_name, {"x": "", "y": "", "z": ""})
-            for table_name in formula_tables
-        }
 
         for table_name in self.formula_tables:
             self._create_formula_table_panel(table_name)
 
         self.active_formula_table.set(next(iter(self.formula_tables)))
         self._refresh_active_table_choices()
+
+    @staticmethod
+    def _parse_formula_rows(rows: object) -> list[tuple[str, str]]:
+        parsed_rows: list[tuple[str, str]] = []
+        if not isinstance(rows, list):
+            return parsed_rows
+        for row in rows:
+            if isinstance(row, dict):
+                parsed_rows.append((str(row.get("title", "")), str(row.get("formula", ""))))
+            elif isinstance(row, (list, tuple)) and len(row) >= 2:
+                parsed_rows.append((str(row[0]), str(row[1])))
+        return [(title, formula) for title, formula in parsed_rows if title or formula]
+
+    def _replace_formula_rows(self, table_name: str, rows: list[tuple[str, str]]) -> None:
+        panel = self.table_panels[table_name]
+        for row_widgets in panel["rows"]:
+            for widget in row_widgets:
+                widget.destroy()
+        panel["rows"].clear()
+        for title, formula in rows:
+            self._add_formula_row(table_name, title, formula, save=False)
+        self._save_formula_rows(table_name)
+        self.formula_results.pop(table_name, None)
+        self._refresh_preview(pd.DataFrame(), panel["preview"], empty_message="Click Build to generate.")
 
     def _refresh_active_table_choices(self) -> None:
         if hasattr(self, "active_table_combo"):
@@ -697,26 +691,19 @@ class ResultProcessingDialog(tk.Toplevel):
             (title.get().strip(), formula.get().strip())
             for _, title, formula in panel["rows"]
         ]
-        axis_vars = panel.get("axis_vars", {})
-        self.table_axis_labels[table_name] = {
-            "x": axis_vars["x"].get().strip(),
-            "y": axis_vars["y"].get().strip(),
-            "z": axis_vars["z"].get().strip(),
-        }
 
     def _save_all_formula_rows(self) -> None:
         for table_name in list(self.table_panels):
             self._save_formula_rows(table_name)
 
     def _export_current(self) -> None:
-        self._export_dataframe(self.current, "processed_filtered_result.csv")
+        self._export_dataframe(self.current, self._default_export_name("current"))
 
     def _export_formula_result(self, table_name: str) -> None:
         if table_name not in self.formula_results:
             messagebox.showwarning("Not generated", f"Please build {table_name} before exporting it.")
             return
-        safe_name = table_name.lower().replace(" ", "_")
-        self._export_dataframe(self.formula_results[table_name], f"processed_{safe_name}.csv")
+        self._export_dataframe(self.formula_results[table_name], self._default_export_name(table_name))
 
     def _export_active_formula_result(self) -> None:
         table_name = self.active_formula_table.get()
@@ -737,8 +724,10 @@ class ResultProcessingDialog(tk.Toplevel):
 
         try:
             for table_name, data in self.formula_results.items():
-                safe_name = table_name.lower().replace(" ", "_")
-                data.to_csv(Path(directory) / f"processed_{safe_name}.csv", index=False)
+                output_path = self._resolve_export_path(Path(directory) / self._default_export_name(table_name))
+                if output_path is None:
+                    continue
+                data.to_csv(output_path, index=False)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return
@@ -756,15 +745,87 @@ class ResultProcessingDialog(tk.Toplevel):
         )
         if not filename:
             return
+        output_path = self._resolve_export_path(Path(filename))
+        if output_path is None:
+            return
 
         try:
-            data.to_csv(filename, index=False)
+            data.to_csv(output_path, index=False)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return
 
-        self.status_text.set(f"Saved: {filename}")
-        messagebox.showinfo("Export complete", f"Saved result to:\n{filename}")
+        self.status_text.set(f"Saved: {output_path}")
+        messagebox.showinfo("Export complete", f"Saved result to:\n{output_path}")
+
+    def _default_export_name(self, name: str) -> str:
+        parts = [
+            self._safe_optional_filename_part(self.export_prefix.get()),
+            self._filter_name(),
+            self._safe_filename_part(name),
+        ]
+        return "_".join(part for part in parts if part) + ".csv"
+
+    def _resolve_export_path(self, path: Path) -> Path | None:
+        if not path.exists():
+            return path
+
+        change_name = messagebox.askyesno(
+            "File already exists",
+            f"The file already exists:\n{path}\n\nChoose Yes to rename, or No to cancel this export.",
+        )
+        if not change_name:
+            return None
+
+        filename = filedialog.asksaveasfilename(
+            title="Choose a different export filename",
+            initialdir=str(path.parent),
+            initialfile=path.name,
+            defaultextension=path.suffix or ".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return None
+
+        return self._resolve_export_path(Path(filename))
+
+    def _filter_name(self) -> str:
+        target = self._safe_filename_part(self.target_column.get() or "target")
+        threshold = self.threshold.get().strip()
+        pick = self._pick_name()
+        if not threshold:
+            return f"{target}_all_{pick}"
+        operator = {
+            ">": "gt",
+            ">=": "ge",
+            "<": "lt",
+            "<=": "le",
+            "==": "eq",
+            "!=": "ne",
+        }.get(self.operator.get(), self._safe_filename_part(self.operator.get()))
+        return f"{target}_{operator}_{self._safe_filename_part(threshold)}_{pick}"
+
+    def _pick_name(self) -> str:
+        return {
+            "minimum": "min",
+            "maximum": "max",
+            "all matched": "match",
+            "first": "first",
+        }.get(self.pick_mode.get(), self._safe_filename_part(self.pick_mode.get()))
+
+    @staticmethod
+    def _safe_filename_part(value: object) -> str:
+        text = str(value).strip().replace(".", "p")
+        safe = "".join(char if char.isalnum() else "_" for char in text)
+        safe = "_".join(part for part in safe.split("_") if part)
+        return safe or "value"
+
+    @staticmethod
+    def _safe_optional_filename_part(value: object) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        return ResultProcessingDialog._safe_filename_part(text)
 
     def _refresh_preview(self, data: pd.DataFrame, preview: ttk.Treeview, empty_message: str = "") -> None:
         for item in preview.get_children():
@@ -1085,14 +1146,41 @@ class ResonanceFeatureApp(tk.Tk):
             if not self.output_path.get():
                 return
 
+        output_path = self._resolve_output_path(Path(self.output_path.get()))
+        if output_path is None:
+            return
+        self.output_path.set(str(output_path))
+
         try:
-            self.result.to_csv(self.output_path.get(), index=False)
+            self.result.to_csv(output_path, index=False)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return
 
-        self.status_text.set(f"Saved: {self.output_path.get()}")
-        messagebox.showinfo("Export complete", f"Saved result to:\n{self.output_path.get()}")
+        self.status_text.set(f"Saved: {output_path}")
+        messagebox.showinfo("Export complete", f"Saved result to:\n{output_path}")
+
+    def _resolve_output_path(self, path: Path) -> Path | None:
+        if not path.exists():
+            return path
+
+        change_name = messagebox.askyesno(
+            "File already exists",
+            f"The file already exists:\n{path}\n\nChoose Yes to rename, or No to cancel this export.",
+        )
+        if not change_name:
+            return None
+
+        filename = filedialog.asksaveasfilename(
+            title="Choose a different export filename",
+            initialdir=str(path.parent),
+            initialfile=path.name,
+            defaultextension=path.suffix or ".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return None
+        return self._resolve_output_path(Path(filename))
 
     def _open_processing_dialog(self) -> None:
         if self.result is None:

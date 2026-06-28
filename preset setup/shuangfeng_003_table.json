@@ -1,0 +1,27 @@
+{
+  "formula_table": {
+    "name": "Table 2",
+    "rows": [
+      {
+        "title": "x",
+        "formula": "(B-10)/10"
+      },
+      {
+        "title": "kmin",
+        "formula": "C"
+      },
+      {
+        "title": "Zi",
+        "formula": "H/0.03"
+      },
+      {
+        "title": "f_center",
+        "formula": "I"
+      },
+      {
+        "title": "mag_center",
+        "formula": "J"
+      }
+    ]
+  }
+}
